@@ -207,6 +207,40 @@ function durationOf(info) {
   return 0;
 }
 
+// Detect which video encoders are actually available in this ffmpeg build.
+// Used by the UI to populate the codec dropdown (exposes hardware encoders too).
+function getEncoders() {
+  return new Promise((resolve) => {
+    const p = spawn(FF, ['-hide_banner', '-encoders'], { windowsHide: true });
+    let out = '';
+    p.stdout.on('data', (d) => (out += d));
+    p.on('close', () => {
+      const known = [
+        ['libx264', 'H.264 (libx264)', false],
+        ['libx265', 'H.265 / HEVC (libx265)', false],
+        ['libvpx-vp9', 'VP9 (libvpx-vp9)', false],
+        ['libaom-av1', 'AV1 (libaom-av1)', false],
+        ['libsvtav1', 'AV1 (SVT-AV1 · 极快)', false],
+        ['libvpx', 'VP8 (libvpx)', false],
+        ['mpeg4', 'MPEG-4', false],
+        ['h264_nvenc', 'H.264 (NVIDIA NVENC 硬件)', true],
+        ['hevc_nvenc', 'H.265 (NVIDIA NVENC 硬件)', true],
+        ['av1_nvenc', 'AV1 (NVIDIA NVENC 硬件)', true],
+        ['h264_amf', 'H.264 (AMD AMF 硬件)', true],
+        ['hevc_amf', 'H.265 (AMD AMF 硬件)', true],
+        ['av1_amf', 'AV1 (AMD AMF 硬件)', true],
+        ['h264_qsv', 'H.264 (Intel QSV 硬件)', true],
+        ['hevc_qsv', 'H.265 (Intel QSV 硬件)', true],
+        ['av1_qsv', 'AV1 (Intel QSV 硬件)', true]
+      ];
+      const list = known
+        .filter(([name]) => out.includes(name))
+        .map(([name, label, hw]) => ({ name, label, hw, crf: true }));
+      resolve(list);
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Command builders
 // ---------------------------------------------------------------------------
@@ -222,15 +256,40 @@ function buildTranscode(inputPath, params, outputPath) {
 
   if (codec !== 'copy') args.push('-c:v', codec);
 
-  if (codec === 'libx264' || codec === 'libx265') {
-    if (v.crf != null && v.crf !== '' && v.crf != undefined) args.push('-crf', String(v.crf));
-    if (v.preset) args.push('-preset', v.preset);
-    if (v.tune) args.push('-tune', v.tune);
+  const crf = v.crf != null && v.crf !== '' && v.crf !== undefined ? String(v.crf) : null;
+  const speed = v.preset || ''; // 前端传来的「速度档」：x264/x265 是预设名；SVT-AV1/VP9/AV1 是 cpu-used 数字
+
+  // ---- 按编码器的「速度档」提速（核心优化）----
+  if (codec === 'libx264') {
+    if (crf) args.push('-crf', crf);
+    args.push('-preset', speed || 'veryfast', '-threads', '0');
+  } else if (codec === 'libx265') {
+    if (crf) args.push('-crf', crf);
+    args.push('-preset', speed || 'fast', '-tag:v', 'hvc1', '-threads', '0');
+  } else if (codec === 'libsvtav1') {
+    // SVT-AV1：比 libaom-av1 快 50~100 倍
+    args.push('-preset', speed || '6', '-svtav1-params', 'fast-decode=1');
+    if (crf) args.push('-crf', crf);
   } else if (codec === 'libvpx-vp9') {
-    if (v.bitrate) args.push('-b:v', v.bitrate + 'k');
-    args.push('-row-mt', '1');
-  } else if (codec === 'libxvid' || codec === 'mpeg4' || codec === 'libaom-av1') {
-    if (v.bitrate) args.push('-b:v', v.bitrate + 'k');
+    // VP9 默认极慢 → 实时模式 + cpu-used 提速数十倍
+    args.push('-deadline', 'realtime', '-cpu-used', speed || '8', '-row-mt', '1', '-b:v', '0');
+    if (crf) args.push('-crf', crf);
+  } else if (codec === 'libaom-av1') {
+    args.push('-cpu-used', speed || '4', '-row-mt', '1', '-b:v', '0');
+    if (crf) args.push('-crf', crf);
+  } else if (codec.endsWith('_nvenc')) {
+    // NVIDIA 硬件编码：把 CRF 近似成恒定质量 cq
+    args.push('-rc', 'vbr', '-cq', crf || '23', '-b:v', '0');
+  } else if (codec.endsWith('_amf')) {
+    // AMD 硬件编码
+    args.push('-rc', 'cqp', '-qp', crf || '23');
+  } else if (codec.endsWith('_qsv')) {
+    // Intel 硬件编码
+    args.push('-global_quality', crf || '23');
+  } else if (codec === 'libvpx') {
+    args.push('-deadline', 'realtime', '-cpu-used', speed || '8', '-b:v', '1M');
+  } else if (codec === 'mpeg4' || codec === 'libxvid') {
+    args.push('-b:v', (v.bitrate || 2000) + 'k');
   }
 
   if (v.resolution && v.resolution !== 'original') {
@@ -374,6 +433,11 @@ const server = http.createServer(async (req, res) => {
     // status
     if (p === '/api/status' && req.method === 'GET') {
       return sendJSON(res, 200, { ffmpeg: FF, ffprobe: FFPROBE, ok: true });
+    }
+
+    // available video encoders (incl. hardware)
+    if (p === '/api/encoders' && req.method === 'GET') {
+      return getEncoders().then((list) => sendJSON(res, 200, { encoders: list }));
     }
 
     // upload (raw binary). ?name=filename

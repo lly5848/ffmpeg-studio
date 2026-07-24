@@ -90,7 +90,7 @@
             <input type="range" id="tcCrf" min="0" max="51" value="23" />
           </div>
           <div class="row">
-            <label>预设速度</label>
+            <label id="tcPresetLabel">预设速度</label>
             <select id="tcPreset">
               <option>ultrafast</option><option>superfast</option><option>veryfast</option>
               <option selected>fast</option><option>medium</option><option>slow</option><option>slower</option><option>veryslow</option>
@@ -231,7 +231,7 @@
             <select id="fxFormat"><option value="mp4">MP4</option><option value="mkv">MKV</option><option value="mov">MOV</option><option value="gif">GIF</option></select>
           </div>
           <div class="row"><label>视频编码</label>
-            <select id="fxVcodec"><option value="libx264">H.264</option><option value="libx265">H.265</option><option value="copy">复制</option></select>
+            <select id="fxVcodec"><option value="libx264">H.264</option><option value="libx265">H.265</option><option value="libsvtav1">AV1 (SVT-AV1)</option><option value="copy">复制</option></select>
           </div>
           <div class="row"><label>音频</label>
             <select id="fxAudio"><option value="copy">复制</option><option value="aac">AAC</option><option value="none">静音</option></select>

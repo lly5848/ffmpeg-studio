@@ -48,6 +48,7 @@ window.addEventListener('DOMContentLoaded', () => {
   wireConcat();
   wireFilter();
   wireInfo();
+  loadEncoders();
   tickClock();
 });
 
@@ -215,9 +216,75 @@ function wireTranscode() {
     $(s).addEventListener('input', () => { $('#tcCrfVal').textContent = $('#tcCrf').value; updateCmdPreviews(); });
     $(s).addEventListener('change', updateCmdPreviews);
   });
+  $('#tcVcodec').addEventListener('change', onVcodecChange);
   $('#tcCrf').addEventListener('input', () => ($('#tcCrfVal').textContent = $('#tcCrf').value));
   $('#tcRun').onclick = runTranscode;
   $('#tcReset').onclick = () => location.reload();
+}
+
+// ---------------------------------------------------------------------------
+// Encoder detection (fills transcode codec dropdown, incl. hardware)
+// ---------------------------------------------------------------------------
+const SPEED_MAP = {
+  libx264: { type: 'preset', def: 'veryfast', opts: ['ultrafast', 'superfast', 'veryfast', 'fast', 'medium', 'slow', 'slower', 'veryslow'] },
+  libx265: { type: 'preset', def: 'fast', opts: ['ultrafast', 'superfast', 'veryfast', 'fast', 'medium', 'slow', 'slower', 'veryslow'] },
+  libsvtav1: { type: 'preset', def: '6', opts: [['12', '极速'], ['10', '很快'], ['8', '快'], ['6', '均衡(推荐)'], ['4', '较慢'], ['2', '最慢']] },
+  'libvpx-vp9': { type: 'cpu', def: '8', opts: [['8', '极速'], ['6', '快'], ['4', '均衡'], ['2', '慢'], ['0', '最慢']] },
+  'libaom-av1': { type: 'cpu', def: '4', opts: [['8', '极速'], ['6', '快'], ['4', '均衡(推荐)'], ['2', '慢'], ['0', '最慢']] }
+};
+
+async function loadEncoders() {
+  try {
+    const r = await api('/api/encoders');
+    const d = await r.json();
+    if (d.encoders && d.encoders.length) window._ENCODERS = d.encoders;
+  } catch (_) { /* 用静态兜底 */ }
+  populateVcodecs();
+}
+
+function populateVcodecs() {
+  const el = $('#tcVcodec');
+  const cur = el.value;
+  const encs = window._ENCODERS || [
+    { name: 'libx264', label: 'H.264 (libx264)' },
+    { name: 'libx265', label: 'H.265 / HEVC' },
+    { name: 'libvpx-vp9', label: 'VP9' },
+    { name: 'libaom-av1', label: 'AV1' },
+    { name: 'mpeg4', label: 'MPEG-4' }
+  ];
+  const sw = encs.filter((e) => !e.hw);
+  let html = sw.map((e) => `<option value="${e.name}">${e.label}</option>`).join('');
+  const hw = encs.filter((e) => e.hw);
+  if (hw.length) html += '<optgroup label="硬件加速">' + hw.map((e) => `<option value="${e.name}">${e.label}</option>`).join('') + '</optgroup>';
+  html += '<option value="copy">直接复制 (不重编码)</option>';
+  el.innerHTML = html;
+  if (cur && encs.find((e) => e.name === cur)) el.value = cur;
+  onVcodecChange();
+}
+
+function isHardware(codec) {
+  return codec.endsWith('_nvenc') || codec.endsWith('_amf') || codec.endsWith('_qsv');
+}
+
+// Rebuild the "speed" selector to match the chosen codec.
+function onVcodecChange() {
+  const codec = $('#tcVcodec').value;
+  const presetSel = $('#tcPreset');
+  const row = presetSel.closest('.row');
+  const cfg = SPEED_MAP[codec];
+  if (!cfg || codec === 'copy' || isHardware(codec)) {
+    row.style.display = 'none';
+    presetSel.innerHTML = '';
+  } else {
+    row.style.display = '';
+    presetSel.innerHTML = cfg.opts.map((o) => {
+      const [val, lab] = Array.isArray(o) ? o : [o, o];
+      return `<option value="${val}"${val === cfg.def ? ' selected' : ''}>${lab}</option>`;
+    }).join('');
+    const lbl = $('#tcPresetLabel');
+    if (lbl) lbl.textContent = cfg.type === 'cpu' ? '速度档 (cpu-used)' : '预设速度';
+  }
+  updateCmdPreviews();
 }
 
 function buildTranscodeCmd() {
@@ -236,11 +303,32 @@ function buildTranscodeCmd() {
 
   const args = ['-y', '-i', `"${src}"`];
   if (vcodec !== 'copy') args.push('-c:v', vcodec);
-  if (vcodec === 'libx264' || vcodec === 'libx265') {
-    args.push('-crf', crf, '-preset', preset);
+
+  if (vcodec === 'libx264') {
+    args.push('-crf', crf, '-preset', preset || 'veryfast', '-threads', '0');
+  } else if (vcodec === 'libx265') {
+    args.push('-crf', crf, '-preset', preset || 'fast', '-tag:v', 'hvc1', '-threads', '0');
+  } else if (vcodec === 'libsvtav1') {
+    args.push('-preset', preset || '6', '-svtav1-params', 'fast-decode=1');
+    if (crf) args.push('-crf', crf);
   } else if (vcodec === 'libvpx-vp9') {
-    args.push('-b:v', '0', '-crf', crf);
+    args.push('-deadline', 'realtime', '-cpu-used', preset || '8', '-row-mt', '1', '-b:v', '0');
+    if (crf) args.push('-crf', crf);
+  } else if (vcodec === 'libaom-av1') {
+    args.push('-cpu-used', preset || '4', '-row-mt', '1', '-b:v', '0');
+    if (crf) args.push('-crf', crf);
+  } else if (vcodec.endsWith('_nvenc')) {
+    args.push('-rc', 'vbr', '-cq', crf || '23', '-b:v', '0');
+  } else if (vcodec.endsWith('_amf')) {
+    args.push('-rc', 'cqp', '-qp', crf || '23');
+  } else if (vcodec.endsWith('_qsv')) {
+    args.push('-global_quality', crf || '23');
+  } else if (vcodec === 'libvpx') {
+    args.push('-deadline', 'realtime', '-cpu-used', preset || '8', '-b:v', '1M');
+  } else if (vcodec === 'mpeg4' || vcodec === 'libxvid') {
+    args.push('-b:v', '2000k');
   }
+
   if (res !== 'original') args.push('-vf', `scale=${res.replace('x', ':')}`);
   if (fps) args.push('-r', fps);
   if (acodec === 'none') args.push('-an');
