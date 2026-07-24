@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-studio",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Interactive desktop UI for ffmpeg: transcode, concat, filters, media info",
   "main": "main.js",
   "author": "FFmpeg Studio",
@@ -32,12 +32,12 @@
       ]
     },
     "nsis": {
-      "artifactName": "FFmpeg-Studio-Setup-v0.2.${ext}",
+      "artifactName": "FFmpeg-Studio-Setup-v0.3.${ext}",
       "shortcutName": "FFmpeg Studio",
       "uninstallDisplayName": "FFmpeg Studio"
     },
     "portable": {
-      "artifactName": "FFmpeg-Studio-Portable-v0.2.${ext}"
+      "artifactName": "FFmpeg-Studio-Portable-v0.3.${ext}"
     }
   },
   "devDependencies": {
