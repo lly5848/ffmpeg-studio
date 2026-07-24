@@ -116,3 +116,4 @@ ffmpeg-studio/
 ## 📄 许可证
 
 MIT
+#  本项目完全由腾讯WorkBuddy制作完成
