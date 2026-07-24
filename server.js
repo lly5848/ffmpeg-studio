@@ -614,12 +614,26 @@ function startServer() {
   OUTPUTS = path.join(DATA_ROOT, 'outputs');
   fs.mkdirSync(UPLOADS, { recursive: true });
   fs.mkdirSync(OUTPUTS, { recursive: true });
-  return resolveTools().then(() => new Promise((resolve) => {
-    server.listen(PORT, () => {
-      console.log(`[ffmpeg-studio] running at http://localhost:${PORT}`);
+  return resolveTools().then(() => new Promise((resolve, reject) => {
+    let attemptPort = PORT;
+    const MAX_PORT = PORT + 100; // 端口被占用时最多顺延 100 个，避免启动失败
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE' && attemptPort < MAX_PORT) {
+        console.warn(`[ffmpeg-studio] 端口 ${attemptPort} 被占用，自动尝试 ${attemptPort + 1}`);
+        attemptPort++;
+        server.listen(attemptPort);
+      } else {
+        reject(err);
+      }
+    });
+    server.listen(attemptPort, () => {
+      if (attemptPort !== PORT) {
+        console.warn(`[ffmpeg-studio] 已在端口 ${attemptPort} 启动（默认 ${PORT} 不可用）`);
+      }
+      console.log(`[ffmpeg-studio] running at http://localhost:${attemptPort}`);
       console.log(`[ffmpeg-studio] uploads : ${UPLOADS}`);
       console.log(`[ffmpeg-studio] outputs : ${OUTPUTS}`);
-      resolve(server);
+      resolve({ server, port: attemptPort });
     });
   }));
 }
