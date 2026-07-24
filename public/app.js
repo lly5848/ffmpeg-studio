@@ -42,12 +42,14 @@ let FILES = { uploads: [], outputs: [] };
 window.addEventListener('DOMContentLoaded', () => {
   checkStatus();
   loadFiles();
+  loadConfig();
   wireTabs();
   wireDropzone();
   wireTranscode();
   wireConcat();
   wireFilter();
   wireInfo();
+  wireSettings();
   loadEncoders();
   tickClock();
 });
@@ -131,15 +133,25 @@ function renderTray() {
 }
 
 function populateSelects() {
-  const opts = FILES.uploads.map((n) => `<option value="${n}">${n}</option>`).join('');
+  const upOpts = FILES.uploads.map((n) => `<option value="${n}">${n}</option>`).join('');
+  const inOpts = (window._INPUTFILES && window._INPUTFILES.length)
+    ? `<optgroup label="输入目录">${window._INPUTFILES.map((f) => `<option value="${f.path}">📂 ${f.name}</option>`).join('')}</optgroup>`
+    : '';
+  const opts = upOpts + inOpts || '<option value="">（无文件）</option>';
   ['#tcSrc', '#fxSrc', '#infoSrc'].forEach((s) => {
     const el = $(s);
     const cur = el.value;
-    el.innerHTML = opts || '<option value="">（无文件）</option>';
-    if (cur && FILES.uploads.includes(cur)) el.value = cur;
+    el.innerHTML = opts;
+    const inPaths = (window._INPUTFILES || []).map((f) => f.path);
+    if (cur && (FILES.uploads.includes(cur) || inPaths.includes(cur))) el.value = cur;
   });
   updateCmdPreviews();
 }
+
+// A source select value may be either an uploaded file name or an absolute
+// path from the input directory. Convert to the right request field.
+function srcField(val) { return /[\\/]/.test(val) ? { source: val } : { file: val }; }
+function baseName(val) { return String(val).split(/[\\/]/).pop(); }
 
 function useFile(name) {
   // default: load into transcode + filter + info source
@@ -290,6 +302,7 @@ function onVcodecChange() {
 function buildTranscodeCmd() {
   const src = $('#tcSrc').value;
   if (!src) return '（请先选择源文件）';
+  const disp = baseName(src);
   const fmt = $('#tcFormat').value;
   const vcodec = $('#tcVcodec').value;
   const crf = $('#tcCrf').value;
@@ -299,7 +312,7 @@ function buildTranscodeCmd() {
   const acodec = $('#tcAcodec').value;
   const abr = $('#tcAbr').value;
   const fast = $('#tcFaststart').checked;
-  const out = sanitize(src) + '_out.' + fmt;
+  const out = sanitize(disp) + '_out.' + fmt;
 
   const args = ['-y', '-i', `"${src}"`];
   if (vcodec !== 'copy') args.push('-c:v', vcodec);
@@ -426,6 +439,7 @@ function wireFilter() {
 function buildFilterCmd() {
   const src = $('#fxSrc').value;
   if (!src) return '（请先选择源文件）';
+  const disp = baseName(src);
   const filters = [];
   const scale = $('#fxScale').value;
   if (scale !== 'original') filters.push(`scale=${scale.replace('x', ':')}`);
@@ -453,7 +467,7 @@ function buildFilterCmd() {
   const fmt = $('#fxFormat').value;
   const vcodec = $('#fxVcodec').value;
   const audio = $('#fxAudio').value;
-  const out = sanitize(src) + '_fx.' + fmt;
+  const out = sanitize(disp) + '_fx.' + fmt;
 
   const args = ['-y', '-i', `"${src}"`];
   if (filters.length) args.push('-vf', `"${filters.join(',')}"`);
@@ -477,7 +491,7 @@ async function showInfo() {
   if (!f) { out.textContent = '请选择文件'; return; }
   out.innerHTML = '查询中…';
   try {
-    const r = await postJSON('/api/info', { file: f });
+    const r = await postJSON('/api/info', srcField(f));
     const d = await r.json();
     if (!d.ok) { out.textContent = '失败: ' + d.error; return; }
     const rows = [];
@@ -579,10 +593,11 @@ function runJob(endpoint, payload, ui) {
 function runTranscode() {
   const src = $('#tcSrc').value;
   if (!src) return toast('请先选择源文件', 'err');
+  const base = baseName(src);
   runJob('/api/transcode', {
-    file: src,
+    ...srcField(src),
     format: $('#tcFormat').value,
-    outName: sanitize(src) + '_out',
+    outName: sanitize(base) + '_out',
     params: {
       video: {
         codec: $('#tcVcodec').value,
@@ -615,6 +630,7 @@ function runConcat() {
 function runFilter() {
   const src = $('#fxSrc').value;
   if (!src) return toast('请先选择源文件', 'err');
+  const base = baseName(src);
   const params = {
     scale: $('#fxScale').value,
     rotate: $('#fxRotate').value,
@@ -632,7 +648,7 @@ function runFilter() {
     audioCodec: $('#fxAudio').value === 'copy' ? 'copy' : $('#fxAudio').value,
     mute: $('#fxAudio').value === 'none'
   };
-  runJob('/api/filter', { file: src, format: $('#fxFormat').value, outName: sanitize(src) + '_fx', params },
+  runJob('/api/filter', { ...srcField(src), format: $('#fxFormat').value, outName: sanitize(base) + '_fx', params },
     { runBtn: $('#fxRun'), progressWrap: $('#fxProgress'), fill: $('#fxFill'), pct: $('#fxPct'), log: $('#fxLog') });
 }
 
@@ -641,4 +657,74 @@ function runExtract() {
   if (!src) return toast('请先选择源文件', 'err');
   runJob('/api/extract-audio', { file: src, codec: 'aac' },
     { runBtn: $('#fxExtract'), progressWrap: $('#fxProgress'), fill: $('#fxFill'), pct: $('#fxPct'), log: $('#fxLog') });
+}
+
+// ---------------------------------------------------------------------------
+// SETTINGS (custom input/output dirs + cleanup)
+// ---------------------------------------------------------------------------
+function wireSettings() {
+  $('#setSaveOutput').onclick = () => saveConfigField('outputDir', $('#setOutput').value);
+  $('#setSaveInput').onclick = () => saveConfigField('inputDir', $('#setInput').value);
+  $('#setSaveAll').onclick = async () => {
+    const r = await postJSON('/api/config', {
+      outputDir: $('#setOutput').value,
+      inputDir: $('#setInput').value,
+      deleteSourceAfter: $('#setDelSrc').checked
+    });
+    const d = await r.json();
+    if (d.ok) { toast('设置已保存', 'ok'); window._CFG = d; renderCfgInfo(); loadInputFiles(); }
+    else toast('保存失败: ' + (d.error || ''), 'err');
+  };
+  $('#setClearUploads').onclick = async () => {
+    if (!confirm('确定清空上传文件夹里的所有原视频？此操作不可恢复。')) return;
+    const r = await postJSON('/api/clear-uploads', {});
+    const d = await r.json();
+    if (d.ok) { toast('已清空 ' + d.cleared + ' 个文件', 'ok'); loadFiles(); }
+  };
+  $('#setOutputPreset').onchange = () => { if ($('#setOutputPreset').value) $('#setOutput').value = $('#setOutputPreset').value; };
+  $('#setInputPreset').onchange = () => { if ($('#setInputPreset').value) $('#setInput').value = $('#setInputPreset').value; };
+}
+
+function saveConfigField(field, val) {
+  postJSON('/api/config', { [field]: val, deleteSourceAfter: $('#setDelSrc').checked }).then(async (r) => {
+    const d = await r.json();
+    if (d.ok) { toast('已保存' + (field === 'outputDir' ? '输出' : '输入') + '目录', 'ok'); window._CFG = d; renderCfgInfo(); loadInputFiles(); }
+    else toast('保存失败: ' + (d.error || ''), 'err');
+  });
+}
+
+function renderCfgInfo() {
+  const c = window._CFG || {};
+  $('#setInfo').innerHTML = `当前输出目录：<code>${c.effectiveOutput || '默认'}</code>` +
+    (c.inputDir ? `<br>当前输入目录：<code>${c.inputDir}</code>` : '<br>未设置输入目录（使用上传）') +
+    (c.deleteSourceAfter ? '<br>✅ 转码后自动删除上传原文件' : '');
+}
+
+async function loadConfig() {
+  try {
+    const r = await api('/api/config');
+    window._CFG = await r.json();
+  } catch { window._CFG = { presets: {} }; }
+  const presets = (window._CFG && window._CFG.presets) || {};
+  const labels = { desktop: '桌面', documents: '文档', videos: '视频', downloads: '下载', music: '音乐', home: '用户主目录' };
+  const optHtml = Object.entries(presets).map(([k, v]) => `<option value="${v}">${labels[k] || k} (${v})</option>`).join('');
+  const base = '<option value="">— 预设位置 —</option>';
+  $('#setOutputPreset').innerHTML = base + optHtml;
+  $('#setInputPreset').innerHTML = base + optHtml;
+  if (window._CFG.outputDir) $('#setOutput').value = window._CFG.outputDir;
+  if (window._CFG.inputDir) $('#setInput').value = window._CFG.inputDir;
+  $('#setDelSrc').checked = !!window._CFG.deleteSourceAfter;
+  renderCfgInfo();
+  loadInputFiles();
+}
+
+async function loadInputFiles() {
+  const c = window._CFG || {};
+  if (!c.inputDir) { window._INPUTFILES = []; populateSelects(); return; }
+  try {
+    const r = await api('/api/input-files');
+    const d = await r.json();
+    window._INPUTFILES = d.files || [];
+  } catch { window._INPUTFILES = []; }
+  populateSelects();
 }

@@ -25,6 +25,10 @@ const PUBLIC = path.join(ROOT, 'public');
 let UPLOADS = path.join(ROOT, 'uploads');
 let OUTPUTS = path.join(ROOT, 'outputs');
 
+// User-configurable directories (settings), persisted to config.json under DATA_ROOT.
+let CONFIG = {};
+let CONFIG_FILE = '';
+
 const PORT = process.env.PORT || 5180;
 
 // ---------------------------------------------------------------------------
@@ -456,14 +460,65 @@ const server = http.createServer(async (req, res) => {
 
     // list uploads + outputs
     if (p === '/api/files' && req.method === 'GET') {
-      return sendJSON(res, 200, { uploads: listDir(UPLOADS), outputs: listDir(OUTPUTS) });
+      return sendJSON(res, 200, { uploads: listDir(UPLOADS), outputs: listDir(getOutputDir()), outputDir: getOutputDir() });
+    }
+
+    // settings: read current config + preset dirs
+    if (p === '/api/config' && req.method === 'GET') {
+      return sendJSON(res, 200, {
+        outputDir: CONFIG.outputDir || '',
+        inputDir: CONFIG.inputDir || '',
+        deleteSourceAfter: !!CONFIG.deleteSourceAfter,
+        effectiveOutput: getOutputDir(),
+        presets: commonDirs()
+      });
+    }
+    if (p === '/api/config' && req.method === 'POST') {
+      const body = await readBodyJSON(req);
+      const cfg = {};
+      if (typeof body.outputDir === 'string' && body.outputDir.trim()) {
+        const d = body.outputDir.trim();
+        if (!fs.existsSync(d)) {
+          try { fs.mkdirSync(d, { recursive: true }); } catch (_) { return sendJSON(res, 400, { ok: false, error: '输出目录无效或无法创建: ' + d }); }
+        }
+        cfg.outputDir = d;
+      }
+      if (typeof body.inputDir === 'string' && body.inputDir.trim()) {
+        const d = body.inputDir.trim();
+        if (!fs.existsSync(d)) return sendJSON(res, 400, { ok: false, error: '输入目录不存在: ' + d });
+        cfg.inputDir = d;
+      }
+      cfg.deleteSourceAfter = !!body.deleteSourceAfter;
+      saveConfig(cfg);
+      return sendJSON(res, 200, {
+        ok: true,
+        outputDir: CONFIG.outputDir || '',
+        inputDir: CONFIG.inputDir || '',
+        deleteSourceAfter: !!CONFIG.deleteSourceAfter,
+        effectiveOutput: getOutputDir()
+      });
+    }
+    // list media files directly from the configured input directory (no copy)
+    if (p === '/api/input-files' && req.method === 'GET') {
+      if (!CONFIG.inputDir || !fs.existsSync(CONFIG.inputDir)) return sendJSON(res, 200, { files: [] });
+      const exts = ['.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm', '.flv', '.ts', '.mpg', '.mpeg', '.wmv', '.3gp', '.m2ts'];
+      const files = fs.readdirSync(CONFIG.inputDir)
+        .filter((f) => exts.includes(path.extname(f).toLowerCase()))
+        .map((f) => ({ name: f, path: path.join(CONFIG.inputDir, f), size: fs.statSync(path.join(CONFIG.inputDir, f)).size }));
+      return sendJSON(res, 200, { files });
+    }
+    // wipe all uploaded source files
+    if (p === '/api/clear-uploads' && req.method === 'POST') {
+      let n = 0;
+      for (const f of fs.readdirSync(UPLOADS)) { try { fs.unlinkSync(path.join(UPLOADS, f)); n++; } catch (_) {} }
+      return sendJSON(res, 200, { ok: true, cleared: n });
     }
 
     // media info
     if (p === '/api/info' && req.method === 'POST') {
       const body = await readBodyJSON(req);
-      const fp = path.join(UPLOADS, path.basename(body.file || ''));
-      if (!fs.existsSync(fp)) return sendJSON(res, 404, { ok: false, error: 'file not found' });
+      const fp = resolveSource(body);
+      if (!fp || !fs.existsSync(fp)) return sendJSON(res, 404, { ok: false, error: 'file not found' });
       const info = await getInfo(fp);
       const dur = durationOf(info);
       const vstream = (info.streams || []).find((s) => s.codec_type === 'video');
@@ -482,17 +537,20 @@ const server = http.createServer(async (req, res) => {
     // TRANSCODE
     if (p === '/api/transcode' && req.method === 'POST') {
       const body = await readBodyJSON(req);
-      const src = path.join(UPLOADS, path.basename(body.file || ''));
-      if (!fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const src = resolveSource(body);
+      if (!src || !fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const isUploaded = isInside(src, UPLOADS);
       const ext = (body.format || 'mp4').replace(/[^a-z0-9]/gi, '');
-      const outName = sanitizeName((body.outName || path.parse(body.file).name + '_out')) + '.' + ext;
-      const outPath = path.join(OUTPUTS, outName);
+      const outName = sanitizeName((body.outName || path.parse(src).name + '_out')) + '.' + ext;
+      const outPath = path.join(getOutputDir(), outName);
       const args = buildTranscode(src, body.params || {}, outPath);
       const jobId = createJob();
       sendJSON(res, 200, { ok: true, jobId, output: outName });
       let dur = 0;
       try { dur = durationOf(await getInfo(src)); } catch (_) {}
-      runFFmpeg(jobId, args, dur).catch(() => {});
+      runFFmpeg(jobId, args, dur).catch(() => {}).finally(() => {
+        if (CONFIG.deleteSourceAfter && isUploaded) { try { fs.unlinkSync(src); } catch (_) {} }
+      });
       return;
     }
 
@@ -500,11 +558,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/concat' && req.method === 'POST') {
       const body = await readBodyJSON(req);
       if (!body.files || !body.files.length) return sendJSON(res, 400, { ok: false, error: 'no files' });
-      const paths = body.files.map((f) => path.join(UPLOADS, path.basename(f)));
-      for (const fp of paths) if (!fs.existsSync(fp)) return sendJSON(res, 404, { ok: false, error: 'missing ' + path.basename(fp) });
+      const paths = body.files.map((f) => resolveSource(typeof f === 'string' ? { file: f } : f));
+      for (const fp of paths) if (!fp || !fs.existsSync(fp)) return sendJSON(res, 404, { ok: false, error: 'missing file' });
+      const uploaded = paths.filter((fp) => isInside(fp, UPLOADS));
       const ext = (body.format || 'mp4').replace(/[^a-z0-9]/gi, '');
       const outName = sanitizeName(body.outName || 'concat') + '.' + ext;
-      const outPath = path.join(OUTPUTS, outName);
+      const outPath = path.join(getOutputDir(), outName);
       const jobId = createJob();
       const built = buildConcat(paths, body.params || {}, outPath, jobId);
       sendJSON(res, 200, { ok: true, jobId, output: outName });
@@ -512,42 +571,51 @@ const server = http.createServer(async (req, res) => {
       try {
         for (const fp of paths) dur += durationOf(await getInfo(fp));
       } catch (_) {}
-      runFFmpeg(jobId, built.args, dur).catch(() => {}).finally(() => { if (built.cleanup) try { fs.unlinkSync(built.cleanup); } catch (_) {} });
+      runFFmpeg(jobId, built.args, dur).catch(() => {}).finally(() => {
+        if (built.cleanup) try { fs.unlinkSync(built.cleanup); } catch (_) {}
+        if (CONFIG.deleteSourceAfter) for (const fp of uploaded) { try { fs.unlinkSync(fp); } catch (_) {} }
+      });
       return;
     }
 
     // FILTER
     if (p === '/api/filter' && req.method === 'POST') {
       const body = await readBodyJSON(req);
-      const src = path.join(UPLOADS, path.basename(body.file || ''));
-      if (!fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const src = resolveSource(body);
+      if (!src || !fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const isUploaded = isInside(src, UPLOADS);
       const ext = (body.format || 'mp4').replace(/[^a-z0-9]/gi, '');
-      const outName = sanitizeName(body.outName || (path.parse(body.file).name + '_fx')) + '.' + ext;
-      const outPath = path.join(OUTPUTS, outName);
+      const outName = sanitizeName(body.outName || (path.parse(src).name + '_fx')) + '.' + ext;
+      const outPath = path.join(getOutputDir(), outName);
       const args = buildFilter(src, body.params || {}, outPath);
       const jobId = createJob();
       sendJSON(res, 200, { ok: true, jobId, output: outName });
       let dur = 0;
       try { dur = durationOf(await getInfo(src)); } catch (_) {}
-      runFFmpeg(jobId, args, dur).catch(() => {});
+      runFFmpeg(jobId, args, dur).catch(() => {}).finally(() => {
+        if (CONFIG.deleteSourceAfter && isUploaded) { try { fs.unlinkSync(src); } catch (_) {} }
+      });
       return;
     }
 
     // extract audio only
     if (p === '/api/extract-audio' && req.method === 'POST') {
       const body = await readBodyJSON(req);
-      const src = path.join(UPLOADS, path.basename(body.file || ''));
-      if (!fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const src = resolveSource(body);
+      if (!src || !fs.existsSync(src)) return sendJSON(res, 404, { ok: false, error: 'source file not found' });
+      const isUploaded = isInside(src, UPLOADS);
       const codec = body.codec || 'aac';
       const ext = codec === 'mp3' ? 'mp3' : codec === 'opus' ? 'opus' : codec === 'flac' ? 'flac' : 'm4a';
-      const outName = sanitizeName(path.parse(body.file).name + '_audio') + '.' + ext;
-      const outPath = path.join(OUTPUTS, outName);
+      const outName = sanitizeName(path.parse(src).name + '_audio') + '.' + ext;
+      const outPath = path.join(getOutputDir(), outName);
       const args = ['-y', '-i', src, '-vn', '-c:a', codec, outPath];
       const jobId = createJob();
       sendJSON(res, 200, { ok: true, jobId, output: outName });
       let dur = 0;
       try { dur = durationOf(await getInfo(src)); } catch (_) {}
-      runFFmpeg(jobId, args, dur).catch(() => {});
+      runFFmpeg(jobId, args, dur).catch(() => {}).finally(() => {
+        if (CONFIG.deleteSourceAfter && isUploaded) { try { fs.unlinkSync(src); } catch (_) {} }
+      });
       return;
     }
 
@@ -560,7 +628,9 @@ const server = http.createServer(async (req, res) => {
     // download
     const dl = p.match(/^\/api\/download\/([\w.\-一-龥 ]+)$/);
     if (dl && req.method === 'GET') {
-      const fp = path.join(OUTPUTS, path.basename(decodeURIComponent(dl[1])));
+      const name = path.basename(decodeURIComponent(dl[1]));
+      let fp = path.join(getOutputDir(), name);
+      if (!fs.existsSync(fp)) fp = path.join(OUTPUTS, name);
       if (!fs.existsSync(fp)) { res.writeHead(404); res.end('not found'); return; }
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
@@ -574,7 +644,7 @@ const server = http.createServer(async (req, res) => {
     // delete
     if (p === '/api/delete' && req.method === 'POST') {
       const body = await readBodyJSON(req);
-      const where = body.area === 'outputs' ? OUTPUTS : UPLOADS;
+      const where = body.area === 'outputs' ? getOutputDir() : UPLOADS;
       const fp = path.join(where, path.basename(body.name || ''));
       if (fs.existsSync(fp)) { fs.unlinkSync(fp); return sendJSON(res, 200, { ok: true }); }
       return sendJSON(res, 404, { ok: false });
@@ -608,12 +678,61 @@ function fpsOf(stream) {
 }
 
 // ---------------------------------------------------------------------------
+// User-configurable directories (settings)
+// ---------------------------------------------------------------------------
+function isInside(child, parent) {
+  const a = path.resolve(child).toLowerCase();
+  const b = path.resolve(parent).toLowerCase();
+  return a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
+}
+function loadConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')); } catch (_) { return {}; }
+}
+function saveConfig(cfg) {
+  CONFIG = Object.assign({}, CONFIG, cfg);
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(CONFIG, null, 2)); } catch (_) {}
+}
+function getOutputDir() {
+  if (CONFIG.outputDir && fs.existsSync(CONFIG.outputDir)) return CONFIG.outputDir;
+  return OUTPUTS;
+}
+// Resolve a source from request body: either an uploaded file (by name) or an
+// absolute path inside the configured input dir. Rejects traversal attempts.
+function resolveSource(body) {
+  if (body && body.source && (path.isAbsolute(body.source) || body.source.includes(path.sep))) {
+    const sp = path.resolve(body.source);
+    const base = (CONFIG.inputDir && fs.existsSync(CONFIG.inputDir)) ? path.resolve(CONFIG.inputDir) : null;
+    const up = path.resolve(UPLOADS);
+    if ((base && isInside(sp, base)) || isInside(sp, up)) return sp;
+    return null;
+  }
+  return path.join(UPLOADS, path.basename((body && body.file) || ''));
+}
+// Common user folders offered as presets in the settings UI.
+function commonDirs() {
+  const h = os.homedir();
+  const candidates = {
+    desktop: path.join(h, 'Desktop'),
+    documents: path.join(h, 'Documents'),
+    videos: path.join(h, 'Videos'),
+    downloads: path.join(h, 'Downloads'),
+    music: path.join(h, 'Music'),
+    home: h
+  };
+  const out = {};
+  for (const [k, v] of Object.entries(candidates)) if (fs.existsSync(v)) out[k] = v;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 function startServer() {
   const DATA_ROOT = process.env.FFMPEG_STUDIO_DATA || path.join(os.homedir(), '.ffmpeg-studio');
   UPLOADS = path.join(DATA_ROOT, 'uploads');
   OUTPUTS = path.join(DATA_ROOT, 'outputs');
   fs.mkdirSync(UPLOADS, { recursive: true });
   fs.mkdirSync(OUTPUTS, { recursive: true });
+  CONFIG_FILE = path.join(DATA_ROOT, 'config.json');
+  CONFIG = loadConfig();
   return resolveTools().then(() => new Promise((resolve, reject) => {
     let attemptPort = PORT;
     const MAX_PORT = PORT + 100; // 端口被占用时最多顺延 100 个，避免启动失败

@@ -52,6 +52,7 @@
         <button class="tab" data-tab="concat">🧩 拼接</button>
         <button class="tab" data-tab="filter">✨ 滤镜</button>
         <button class="tab" data-tab="info">🔍 媒体信息</button>
+        <button class="tab" data-tab="settings">⚙ 设置</button>
       </nav>
 
       <!-- TRANSCODE -->
@@ -258,6 +259,41 @@
           <button class="btn" id="infoBtn">查看</button>
         </div>
         <div id="infoOut" class="info-out">选择文件后点击「查看」。</div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="panel" data-panel="settings">
+        <h3 class="panel-title">目录与清理设置</h3>
+        <p class="muted">自定义输出目录（转码结果保存位置）与可选的输入目录（直接读取、不复制原文件）；并可选择转码后自动删除上传的原文件。</p>
+
+        <div class="row">
+          <label>输出目录</label>
+          <input type="text" id="setOutput" placeholder="留空则使用默认 AppData 目录" style="flex:1" />
+        </div>
+        <div class="row">
+          <label>快速选择</label>
+          <select id="setOutputPreset"><option value="">— 预设位置 —</option></select>
+          <button class="btn" id="setSaveOutput">保存输出目录</button>
+        </div>
+
+        <div class="row">
+          <label>输入目录（可选）</label>
+          <input type="text" id="setInput" placeholder="设置后可直接读取该文件夹视频，免上传" style="flex:1" />
+        </div>
+        <div class="row">
+          <label>快速选择</label>
+          <select id="setInputPreset"><option value="">— 预设位置 —</option></select>
+          <button class="btn" id="setSaveInput">保存输入目录</button>
+        </div>
+
+        <label class="check"><input type="checkbox" id="setDelSrc" /> 转码完成后自动删除上传的原文件（输入目录中的文件不会被删除）</label>
+
+        <div class="actions">
+          <button class="btn ghost" id="setClearUploads">🧹 清空上传文件夹</button>
+          <button class="btn" id="setSaveAll">💾 保存全部设置</button>
+        </div>
+
+        <div class="info-out" id="setInfo" style="margin-top:12px"></div>
       </div>
     </section>
   </main>
