@@ -1,0 +1,51 @@
+{
+  "name": "ffmpeg-studio",
+  "version": "1.0.0",
+  "description": "Interactive desktop UI for ffmpeg: transcode, concat, filters, media info",
+  "main": "main.js",
+  "author": "FFmpeg Studio",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.ffmpegstudio.desktop",
+    "productName": "FFmpeg Studio",
+    "copyright": "Copyright © 2026 FFmpeg Studio",
+    "files": [
+      "package.json",
+      "main.js",
+      "server.js",
+      "public/**",
+      "build/**"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": "x64" },
+        { "target": "portable", "arch": "x64" }
+      ]
+    },
+    "nsis": {
+      "artifactName": "FFmpeg-Studio-Setup-${version}.${ext}",
+      "shortcutName": "FFmpeg Studio",
+      "uninstallDisplayName": "FFmpeg Studio"
+    },
+    "portable": {
+      "artifactName": "FFmpeg-Studio-Portable-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "private": true
+}
