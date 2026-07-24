@@ -2,7 +2,7 @@
 
 一个带图形界面的本地视频处理工作台，把命令行工具 `ffmpeg` / `ffprobe` 包装成好用的 Web UI 与桌面程序。支持**转码、拼接、滤镜、媒体信息查看、音频提取**，所有处理都在你本机完成，文件不会上传到任何服务器。
 
-![FFmpeg Studio](docs/preview.png)
+![FFmpeg Studio](build/icon.ico)
 
 ## ✨ 功能
 
