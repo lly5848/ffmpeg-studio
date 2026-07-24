@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FFmpeg Studio · 视频处理工作台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎬</span>
+      <div>
+        <h1>FFmpeg Studio</h1>
+        <p class="sub">本地视频处理工作台 · 转码 / 拼接 / 滤镜</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="ffStatus" class="status-pill" title="ffmpeg 状态">检测中…</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Sidebar: file tray -->
+    <aside class="sidebar">
+      <div class="dropzone" id="globalDrop">
+        <div class="dz-inner">
+          <div class="dz-icon">⬆️</div>
+          <p><strong>拖放视频到这里</strong></p>
+          <p class="muted">或点击选择文件（可多选）</p>
+          <input type="file" id="fileInput" multiple hidden />
+        </div>
+      </div>
+
+      <div class="tray-head">
+        <span>媒体库</span>
+        <button class="mini" id="refreshFiles" title="刷新">⟳</button>
+      </div>
+      <ul class="tray" id="tray"></ul>
+
+      <div class="tray-head">
+        <span>输出文件</span>
+      </div>
+      <ul class="tray outputs" id="outTray"></ul>
+    </aside>
+
+    <!-- Main panel -->
+    <section class="content">
+      <nav class="tabs">
+        <button class="tab active" data-tab="transcode">🔄 转码</button>
+        <button class="tab" data-tab="concat">🧩 拼接</button>
+        <button class="tab" data-tab="filter">✨ 滤镜</button>
+        <button class="tab" data-tab="info">🔍 媒体信息</button>
+      </nav>
+
+      <!-- TRANSCODE -->
+      <div class="panel active" data-panel="transcode">
+        <div class="row">
+          <label>源文件</label>
+          <select id="tcSrc"></select>
+        </div>
+        <div class="grid2">
+          <div class="row">
+            <label>输出格式</label>
+            <select id="tcFormat">
+              <option value="mp4">MP4 (H.264)</option>
+              <option value="mkv">MKV</option>
+              <option value="mov">MOV</option>
+              <option value="webm">WebM (VP9)</option>
+              <option value="avi">AVI</option>
+              <option value="gif">GIF</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>视频编码</label>
+            <select id="tcVcodec">
+              <option value="libx264">H.264 (libx264)</option>
+              <option value="libx265">H.265 / HEVC</option>
+              <option value="libvpx-vp9">VP9</option>
+              <option value="libaom-av1">AV1</option>
+              <option value="mpeg4">MPEG-4</option>
+              <option value="copy">直接复制 (不重编码)</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid3" id="tcQualityRow">
+          <div class="row">
+            <label>CRF 质量 <span class="hint" id="tcCrfVal">23</span></label>
+            <input type="range" id="tcCrf" min="0" max="51" value="23" />
+          </div>
+          <div class="row">
+            <label>预设速度</label>
+            <select id="tcPreset">
+              <option>ultrafast</option><option>superfast</option><option>veryfast</option>
+              <option selected>fast</option><option>medium</option><option>slow</option><option>slower</option><option>veryslow</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>分辨率</label>
+            <select id="tcRes">
+              <option value="original">原始</option>
+              <option value="3840x2160">4K (3840×2160)</option>
+              <option value="1920x1080">1080p</option>
+              <option value="1280x720">720p</option>
+              <option value="854x480">480p</option>
+              <option value="640x360">360p</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid3">
+          <div class="row">
+            <label>帧率 (fps)</label>
+            <input type="number" id="tcFps" placeholder="原始" min="1" max="120" />
+          </div>
+          <div class="row">
+            <label>音频编码</label>
+            <select id="tcAcodec">
+              <option value="aac">AAC</option>
+              <option value="mp3">MP3</option>
+              <option value="opus">Opus</option>
+              <option value="copy">复制</option>
+              <option value="none">无音频</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>音频码率 (kbps)</label>
+            <input type="number" id="tcAbr" value="128" min="32" max="512" />
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="tcFaststart" /> 启用 web 快速启动 (faststart)</label>
+
+        <div class="cmd-preview" id="tcCmd"></div>
+        <div class="actions">
+          <button class="btn primary" id="tcRun">▶ 开始转码</button>
+          <button class="btn ghost" id="tcReset">重置</button>
+        </div>
+        <div class="progress-wrap" id="tcProgress" hidden>
+          <div class="progress-bar"><div class="progress-fill" id="tcFill"></div></div>
+          <span class="progress-pct" id="tcPct">0%</span>
+        </div>
+        <div class="log" id="tcLog"></div>
+      </div>
+
+      <!-- CONCAT -->
+      <div class="panel" data-panel="concat">
+        <p class="muted">从媒体库勾选多个文件参与拼接（按列表顺序）。</p>
+        <div class="concat-list" id="ccList"></div>
+        <div class="grid3">
+          <div class="row">
+            <label>拼接方式</label>
+            <select id="ccMethod">
+              <option value="filter">重编码 (兼容不同格式/分辨率)</option>
+              <option value="demuxer">流复制 (更快，需同格式)</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>输出格式</label>
+            <select id="ccFormat">
+              <option value="mp4">MP4</option><option value="mkv">MKV</option><option value="mov">MOV</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>文件名</label>
+            <input type="text" id="ccName" placeholder="merged" />
+          </div>
+        </div>
+        <div class="cmd-preview" id="ccCmd"></div>
+        <div class="actions">
+          <button class="btn primary" id="ccRun">▶ 开始拼接</button>
+        </div>
+        <div class="progress-wrap" id="ccProgress" hidden>
+          <div class="progress-bar"><div class="progress-fill" id="ccFill"></div></div>
+          <span class="progress-pct" id="ccPct">0%</span>
+        </div>
+        <div class="log" id="ccLog"></div>
+      </div>
+
+      <!-- FILTER -->
+      <div class="panel" data-panel="filter">
+        <div class="row">
+          <label>源文件</label>
+          <select id="fxSrc"></select>
+        </div>
+        <div class="grid2">
+          <fieldset class="fxbox">
+            <legend>画面变换</legend>
+            <div class="row"><label>缩放分辨率</label>
+              <select id="fxScale">
+                <option value="original">原始</option>
+                <option value="1920x1080">1080p</option>
+                <option value="1280x720">720p</option>
+                <option value="854x480">480p</option>
+                <option value="640x360">360p</option>
+              </select>
+            </div>
+            <div class="grid2">
+              <div class="row"><label>旋转</label>
+                <select id="fxRotate"><option value="">无</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select>
+              </div>
+              <div class="row"><label>翻转</label>
+                <select id="fxFlip"><option value="">无</option><option value="h">水平</option><option value="v">垂直</option></select>
+              </div>
+            </div>
+            <div class="grid2">
+              <div class="row"><label>裁剪 W</label><input type="number" id="fxCropW" placeholder="宽" /></div>
+              <div class="row"><label>裁剪 H</label><input type="number" id="fxCropH" placeholder="高" /></div>
+            </div>
+            <div class="grid2">
+              <div class="row"><label>裁剪 X</label><input type="number" id="fxCropX" placeholder="0" value="0" /></div>
+              <div class="row"><label>裁剪 Y</label><input type="number" id="fxCropY" placeholder="0" value="0" /></div>
+            </div>
+            <label class="check"><input type="checkbox" id="fxDenoise" /> 降噪 (hqdn3d)</label>
+          </fieldset>
+
+          <fieldset class="fxbox">
+            <legend>调色 / 时间</legend>
+            <div class="row"><label>亮度 <span class="hint" id="fxBrightVal">0</span></label><input type="range" id="fxBright" min="-0.5" max="0.5" step="0.05" value="0" /></div>
+            <div class="row"><label>对比度 <span class="hint" id="fxContrastVal">1</span></label><input type="range" id="fxContrast" min="0.5" max="2" step="0.1" value="1" /></div>
+            <div class="row"><label>倍速 <span class="hint" id="fxSpeedVal">1</span></label><input type="range" id="fxSpeed" min="0.25" max="4" step="0.25" value="1" /></div>
+            <div class="grid2">
+              <div class="row"><label>淡入(秒)</label><input type="number" id="fxFadeIn" placeholder="0" value="0" min="0" /></div>
+              <div class="row"><label>淡出(秒)</label><input type="number" id="fxFadeOut" placeholder="0" value="0" min="0" /></div>
+            </div>
+            <div class="row"><label>水印文字</label><input type="text" id="fxWmText" placeholder="留空不加水印" /></div>
+          </fieldset>
+        </div>
+
+        <div class="grid3">
+          <div class="row"><label>输出格式</label>
+            <select id="fxFormat"><option value="mp4">MP4</option><option value="mkv">MKV</option><option value="mov">MOV</option><option value="gif">GIF</option></select>
+          </div>
+          <div class="row"><label>视频编码</label>
+            <select id="fxVcodec"><option value="libx264">H.264</option><option value="libx265">H.265</option><option value="copy">复制</option></select>
+          </div>
+          <div class="row"><label>音频</label>
+            <select id="fxAudio"><option value="copy">复制</option><option value="aac">AAC</option><option value="none">静音</option></select>
+          </div>
+        </div>
+
+        <div class="cmd-preview" id="fxCmd"></div>
+        <div class="actions">
+          <button class="btn primary" id="fxRun">▶ 应用滤镜</button>
+          <button class="btn" id="fxExtract">🎵 仅提取音频</button>
+        </div>
+        <div class="progress-wrap" id="fxProgress" hidden>
+          <div class="progress-bar"><div class="progress-fill" id="fxFill"></div></div>
+          <span class="progress-pct" id="fxPct">0%</span>
+        </div>
+        <div class="log" id="fxLog"></div>
+      </div>
+
+      <!-- INFO -->
+      <div class="panel" data-panel="info">
+        <div class="row">
+          <label>文件</label>
+          <select id="infoSrc"></select>
+          <button class="btn" id="infoBtn">查看</button>
+        </div>
+        <div id="infoOut" class="info-out">选择文件后点击「查看」。</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
