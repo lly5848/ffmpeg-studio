@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output (packaged installers, ~400MB)
+dist/
+
+# Runtime data
+uploads/
+outputs/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
